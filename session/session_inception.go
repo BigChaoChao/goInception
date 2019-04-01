@@ -1982,8 +1982,11 @@ func (s *session) checkCreateTable(node *ast.CreateTableStmt, sql string) {
 					}
 				}
 
-				if currentTimestampCount > 1 || onUpdateTimestampCount > 1 {
-					s.AppendErrorNo(ER_TOO_MUCH_AUTO_TIMESTAMP_COLS)
+				mysqlVersion := s.DBVersion
+				if mysqlVersion < 50650 {
+					if currentTimestampCount > 1 || onUpdateTimestampCount > 1 {
+						s.AppendErrorNo(ER_TOO_MUCH_AUTO_TIMESTAMP_COLS)
+					}
 				}
 
 				s.cacheNewTable(table)
