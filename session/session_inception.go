@@ -2618,6 +2618,7 @@ func (s *session) mysqlCheckField(t *TableInfo, field *ast.ColumnDef) {
 	notNullFlag := false
 	autoIncrement := false
 	hasDefaultValue := false
+	hasGenerated := false
 	var defaultValue *types.Datum
 	var defaultExpr ast.ExprNode
 
@@ -2643,6 +2644,8 @@ func (s *session) mysqlCheckField(t *TableInfo, field *ast.ColumnDef) {
 				hasDefaultValue = true
 			case ast.ColumnOptionPrimaryKey:
 				isPrimary = true
+			case ast.ColumnOptionGenerated:
+				hasGenerated = true
 			}
 		}
 	}
@@ -2725,15 +2728,20 @@ func (s *session) mysqlCheckField(t *TableInfo, field *ast.ColumnDef) {
 	}
 
 	if field.Tp.Tp == mysql.TypeTimestamp {
-		if !mysql.HasNoDefaultValueFlag(field.Tp.Flag) {
-			s.AppendErrorNo(ER_TIMESTAMP_DEFAULT, tableName)
+		//检查是否有默认值
+		if !hasDefaultValue {
+			s.AppendErrorNo(ER_TIMESTAMP_DEFAULT,field.Name.Name, tableName)
 		}
+		//检查默认值是否合法, 逻辑合并在tidb_check.isInvalidDefaultValue内
+		//if !mysql.HasNoDefaultValueFlag(field.Tp.Flag) {
+		//
+		//	s.AppendErrorNo(ER_TIMESTAMP_DEFAULT, field.Name.Name,tableName)
+		//}
 	}
 
 	if !hasDefaultValue && field.Tp.Tp != mysql.TypeTimestamp &&
-		!types.IsTypeBlob(field.Tp.Tp) && !autoIncrement && !isPrimary && field.Tp.Tp != mysql.TypeJSON {
+		!types.IsTypeBlob(field.Tp.Tp) && !autoIncrement && !isPrimary && field.Tp.Tp != mysql.TypeJSON && !hasGenerated {
 		s.AppendErrorNo(ER_WITH_DEFAULT_ADD_COLUMN, field.Name.Name.O, tableName)
-
 	}
 
 	// if (thd->variables.sql_mode & MODE_NO_ZERO_DATE &&

@@ -290,7 +290,7 @@ var ErrorsDefault = map[int]string{
 	ER_INC_INIT_ERR:                        "Set auto-increment initialize value to 1.",
 	ER_WRONG_ARGUMENTS:                     "Incorrect arguments to %s.",
 	ER_SET_DATA_TYPE_INT_BIGINT:            "Set auto-increment data type to int or bigint.",
-	ER_TIMESTAMP_DEFAULT:                   "Set default value for timestamp column '%s'.",
+	ER_TIMESTAMP_DEFAULT:                   "Set default value for timestamp column '%s' in table '%s'.",
 	ER_CHARSET_ON_COLUMN:                   "Not Allowed set charset for column '%s.%s'.",
 	ER_AUTO_INCR_ID_WARNING:                "Auto increment column '%s' is meaningful? it's dangerous!",
 	ER_ALTER_TABLE_ONCE:                    "Merge the alter statement for table '%s' to ONE.",

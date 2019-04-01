@@ -28,6 +28,7 @@ import (
 	"github.com/hanchuanchuan/goInception/util/charset"
 	"github.com/pingcap/errors"
 	// log "github.com/sirupsen/logrus"
+	"time"
 )
 
 // checkContainDotColumn checks field contains the table name.
@@ -188,9 +189,32 @@ func isInvalidDefaultValue(colDef *ast.ColumnDef) bool {
 		columnOpt := colDef.Options[i]
 		if columnOpt.Tp == ast.ColumnOptionDefaultValue {
 			// log.Infof("%#v", columnOpt.Expr)
-			if !(tp.Tp == mysql.TypeTimestamp || tp.Tp == mysql.TypeDatetime) && isDefaultValNowSymFunc(columnOpt.Expr) {
-				return true
+			if tp.Tp == mysql.TypeTimestamp || tp.Tp == mysql.TypeDatetime {
+				if isDefaultValNowSymFunc(columnOpt.Expr) {
+					return false
+				} else {
+					//Check Timestamp default value isInvalid
+					t, err := time.Parse("2006-01-02 15:04:05", string(columnOpt.Expr.GetDatum().GetBytes()))
+					if err != nil {
+						return true
+					}
+					beginTime, _ := time.Parse("2006-01-02 15:04:05", "1970-01-01 00:00:00")
+					endTime, _ := time.Parse("2006-01-02 15:04:05", "2037-12-31 23:59:59")
+					if t.After(beginTime) && t.Before(endTime) {
+						return false
+					} else {
+						return true
+					}
+				}
+			} else {
+				if isDefaultValNowSymFunc(columnOpt.Expr) {
+					return true
+				}
 			}
+			//
+			//if !(tp.Tp == mysql.TypeTimestamp || tp.Tp == mysql.TypeDatetime) && isDefaultValNowSymFunc(columnOpt.Expr) {
+			//	return true
+			//}
 			break
 		}
 	}
