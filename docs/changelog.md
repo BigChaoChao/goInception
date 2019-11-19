@@ -1,6 +1,311 @@
 # goInception 更新日志
 
 
+## [v1.1.3] - 2019-11-13
+
+### Fix
+* 修复表内有text,json等[]byte类型字段时最小化生成回滚语句panic的问题 (#105,#107)
+* 修复`decimal`类型逆向解析时变为科学计数法形式的问题 (#106,#108)
+* 修复多线程高并发测试时解析调用参数出现线程安全问题的bug (#103)
+
+### New Features
+* 添加审核选项 `check_implicit_type_conversion` ,审核where条件中的隐式类型转换 (#101)
+
+### Update
+* 添加TiDB数据库判断(不支持tidb备份)
+* 添加未指定表前缀时的字段歧义审核
+
+
+## [v1.1.2] - 2019-10-30
+
+### Fix
+* 修复线程号超出uint32范围时无法备份的问题
+
+### New Features
+* 添加设置参数 `enable_minimal_rollback`, 用以开启最小化回滚SQL设置 (#90)
+* 添加设置参数 `wait_timeout`, 用以设置远端数据库等待超时时间,默认为0,即保持数据库设置
+* 添加mysql安全连接参数设置 `--ssl`等, 可配置SSL或CA证书验证 (#92)
+
+
+## [v1.1.1] - 2019-10-13
+
+### Fix
+* 修复TiDB数据库explain出错的问题 (#86)
+* 修复`insert select`语法在有删除列时列数校验可能不准确的问题
+
+### New Features
+* 添加审核选项 `explain_rule` ,用以设置explain获取受影响行数方式
+
+### Update
+* 完善`spatial index`审核规则
+* 调整update语法均进行逻辑审核
+* 添加join语法的ON子句审核
+* 优化delete审核规则,有新表时跳过explain审核
+* 远程数据库无法连接时,优化返回结果,添加sql内容返回
+
+
+## [v1.1.0] - 2019-9-7
+
+### Fix
+* 修复add column操作未命中`merge_alter_table`检测的问题 (#79)
+
+### New Features
+* 添加空间类型语法解析,添加空间索引支持
+* 添加新的调用选项`--db`,用以设置默认连接的数据库,默认值为`mysql`
+
+### Update
+* 支持建库时同时创建表等操作 (#77)
+* 优化DDL回滚细节,对alter table多条子句调整回滚SQL为逆向 (#76)
+* 在执行前添加数据库只读状态判断
+* 优化索引总长度审核,现在基于目标库`innodb_large_prefix`参数判断
+* 审核select语法中的星号列
+* 优化多语句拆分解析逻辑,优化分号末尾但未结束的SQL解析
+* 完善列定义中的索引校验
+
+
+## [v1.0.5] - 2019-8-20
+
+### Fix
+* 修复insert values子句不支持default语法的问题
+
+### New Features
+* 添加参数`default_charset` 用以设置连接数据库的默认字符集,默认值`utf8mb4` (解决低版本不支持utf8mb4的问题)
+* 添加pt-osc参数`osc_check_unique_key_change`, 设置pt-osc是否检查唯一索引,默认为`true`
+
+### Update
+* 优化回滚功能,添加binlog_row_image设置检查,为minimal时自动修改会话级别为full
+
+
+## [v1.0.4] - 2019-8-5
+
+### New Features
+* 添加set names语法支持 (#69)
+
+### Update
+* 优化主键索引审核信息 (#67)
+* 完善`update set`多字段审核规则,为set多列and语法添加警告
+* 优化gh-ost socket文件名生成规则,避免长度溢出导致创建失败
+* 完善外键审核规则 (#68,#70)
+
+
+## [v1.0.3] - 2019-7-29
+
+### Fix
+* `[gh-ost]` 修复gh-ost在异常时没有断开binlog dump连接的问题
+* `[gh-ost]` 修复gh-ost当添加datetime列且默认值current_timestamp时,增量数据因时区导致数据错误的问题(timestamp列是正常的)
+
+### New Features
+* 添加参数 `enable_change_column` ,设置是否支持change column语法
+* 添加调用选项 `real_row_count`,设置是否通过`count(*)`获取真正受影响行数.默认值`false`
+
+### Update
+* 添加pt-osc执行change column的审核,禁止多条change column操作,以免数据丢失 (pt-osc bug)
+
+
+## [v1.0.2] - 2019-7-26
+
+### Fix
+* 修复 `alter table` 命令没有其他选项时能正常通过的bug (#59)
+* 修复跨库操作时可能出现备份记录写错备份库的问题
+
+### New Features
+* 添加参数 `max_ddl_affect_rows`，设置DDL允许的最大受影响行数，默认为`0`，即不限制
+* 添加参数 `check_float_double` ，为 true 时，警告将 float/double 转成 decimal 数据类型。 默认为 false (#62)
+* 添加参数 `check_identifier_upper` ，限制表名、列名、索引名等必须为大写，默认为`false` (#63)
+
+### Update
+* 优化自定义审核级别实现，移除参数 `enable_level`，现在自定义审核级别和审核开关设置合并 (#52)
+* 升级parser语法解析包，优化列排序规则和分区表语法支持 (#50)
+* 优化gh-ost的server_id设置自动变化，避免同一实例重复
+
+
+## [v1.0.1] - 2019-7-20
+
+### Fix
+* 修复 `must_have_columns` 参数列类型的大小写兼容问题
+
+### New Features
+* 添加 `alter table rename index` 语法支持
+* 添加参数 `enable_zero_date`，设置是否支持时间为0值，关闭时强制报错。默认值为 `true` (#55)
+* 添加参数 `enable_timestamp_type` ，设置是否允许 `timestamp` 类型字段 (#57)
+* 添加 `mysql 5.5` 版本审核支持 (#54)
+
+### Update
+* 优化modify column列信息逻辑保存
+* 优化列属性的键定义逻辑保存
+
+
+## [v1.0] - 2019-7-15
+
+### Fix
+* 修复密码中包含特殊字符时pt-osc执行出错的问题
+
+### New Features
+* 添加审核结果级别自定义功能 (#52)
+
+### Update
+* 添加delete/update自连接审核支持 (#51)
+* 优化binlog回滚时指定的server_id自动变化,避免同一实例重复
+
+
+## [v1.0-rc4] - 2019-7-9
+
+### Fix
+* 修复pt-osc可能出现执行成功时但进度不到100%的问题 (#48)
+
+### New Features
+* 增加enable_set_engine、support_engine参数，控制是否允许指定存储引擎以及支持的存储引擎类型 (#47)
+
+### Update
+* 优化osc的进程列表,同一会话的osc进程信息延后清除(在会话执行返回后) (#48)
+* 优化备份库库名生成逻辑,库名过长时自动截断 (#49)
+* 优化delete和update别名审核 (#51)
+
+
+## [v1.0-rc3] - 2019-7-2
+
+### Fix
+* 修复使用osc做DDL变更时可能不支持的问题(如`alter table t engine='innodb'`)
+
+### New Features
+* 添加sleep执行等待功能,降低对线上数据库的影响 (#46)
+    * 调用选项 `sleep` ,执行 `sleep_rows` 条SQL后休眠多少毫秒,以降低对线上数据库的影响
+    * 调用选项 `sleep_rows` ,执行多少条SQL后休眠一次
+* 添加参数 `max_allowed_packet` 以支持更长的SQL文本
+* 添加参数 `skip_sqls` 以兼容不同客户端的默认sql
+
+### Update
+* 调整备份记录表sql_statement字段类型为mediumtext,并自动兼容旧版本的text类型
+* 兼容mysqlclient客户端
+
+
+## [v1.0-rc2] - 2019-6-21
+
+### Fix
+* 优化回滚相关表结构,字符集调整为utf8mb4 (`历史表结构需要手动调整`)
+
+### Update
+* 优化审核规则,审核子查询、函数等各种表达式 (#44)
+* 优化gh-ost默认生成的socket文件名格式
+* 优化日志输出,添加线程号显示
+* binlog解析时添加mariadb判断
+
+
+## [v1.0-rc1] - 2019-6-12
+
+### New Features
+* 添加split分隔功能 (#42)
+
+
+## [v0.9-beta] - 2019-6-4
+
+### New Features
+* 添加统计功能,可通过参数 `enable_sql_statistic` 启用 (#38)
+* 添加参数 `check_column_position_change` ,可控制是否检查列位置/顺序变更 (#40, #41)
+
+### Update
+* 优化使用阿里云RDS和gh-ost时的逻辑,自动设置 `assume-master-host` 参数 (#39)
+
+
+## [v0.8.3-beta] - 2019-5-30
+
+### Fix
+* 修复gh-ost的initially-drop-old-table和initially-drop-ghost-table参数支持
+* 修复设置osc_min_table_size大于0后无法正常启用osc的bug
+
+### Update
+* 兼容语法inception get processlist
+* docker镜像内置pt-osc包(版本3.0.13)
+
+
+## [v0.8.2-beta] - 2019-5-27
+
+### Fix
+* fix: 修复binlog解析时对unsigned列溢出值的处理
+* fix: 修复gh-ost执行语句有反引号时报语法错误的bug (#33)
+* fix: 修复kill DDL操作时,返回执行和备份成功的bug,现在会提示执行结果未知了 (#34)
+
+
+## [v0.8.1-beta] - 2019-5-24
+
+### Fix
+* 修复新建表后,使用大小写不一致的表名时返回表不存在bug
+
+### New Features
+* 添加general_log参数,用以记录全量日志
+
+### Update
+* 优化insert select新表的审核规则,现在select新表时也可以审核了
+
+
+## [v0.8-beta] - 2019-5-22
+
+### Fix
+* 修复当开启sql指纹功能时,可能出现把警告误标记为错误的bug
+
+### Update
+* 优化子查询审核规则,递归审核所有子查询
+* 审核group by语法和聚合函数
+
+
+## [v0.7.5-beta] - 2019-5-17
+
+### Fix
+* 修复执行阶段kill逻辑,避免kill后备份也中止
+
+### New Features
+* 添加select语法支持
+* 添加alter table的ALGORITHM,LOCK,FORCE语法支持
+
+### Update
+* 优化update子查询审核
+
+
+## [v0.7.4-beta] - 2019-5-12
+
+### New Features
+* 添加alter table表选项语法支持 (#30)
+* 重新设计kill操作支持,支持远端数据库kill和goInception kill命令 (#10)
+
+
+## [v0.7.3-beta] - 2019-5-10
+
+### Fix
+* 修复在开启备份时,执行错误时偶尔出现的误标记执行/备份成功bug
+
+### New Features
+* 添加`check_column_type_change`参数，设置是否开启字段类型变更审核,默认`开启` (#27)
+
+### Update
+* 实现insert select * 列数审核
+
+
+## [v0.7.2-beta] - 2019-5-7
+
+### New Features
+* 添加`enable_json_type`参数，设置是否允许json类型字段 (#26)
+
+### Update
+* 实现基于系统变量explicit_defaults_for_timestamp的审核规则
+* 优化osc解析,转义密码和alter语句中的特殊字符
+
+
+## [v0.7.1-beta] - 2019-5-4
+
+### Update
+* 优化json类型字段处理逻辑，不再检查其默认值和NOT NULL约束 (#7, #22)
+* 优化must_have_columns参数值解析
+* 优化insert select审核逻辑
+
+### Fix
+* 修复和完善add column(...)语法支持
+* 修复开启osc时,alter语句有多余空格时执行失败的bug
+
+### New Features
+* 添加`enable_null_index_name`参数，允许不指定索引名 (#25)
+* 添加语法树打印功能(beta) (#21)
+
+
 ## [v0.7-beta] - 2019-4-26
 
 ### Update

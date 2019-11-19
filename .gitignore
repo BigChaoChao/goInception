@@ -17,8 +17,8 @@ explain_test
 cmd/explaintest/explain-test.out
 _tools/
 *.fail.go
-*.go.tmp
 site/
 util/logutil/slow_query
 test/
 release/
+config/config.toml

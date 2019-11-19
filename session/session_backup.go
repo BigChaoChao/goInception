@@ -57,14 +57,15 @@ func (s *session) runBackup(ctx context.Context) {
 		if s.checkSqlIsDML(record) || s.checkSqlIsDDL(record) {
 			s.myRecord = record
 
-			errno := s.mysqlCreateBackupTable(record)
-			if errno == 2 {
-				break
-			}
+			longDataType := s.mysqlCreateBackupTable(record)
+			// errno := s.mysqlCreateBackupTable(record)
+			// if errno == 2 {
+			// 	break
+			// }
 			if record.TableInfo == nil {
 				s.AppendErrorNo(ErrNotFoundTableInfo)
 			} else {
-				s.mysqlBackupSql(record)
+				s.mysqlBackupSql(record, longDataType)
 			}
 
 			if s.hasError() {
@@ -83,7 +84,6 @@ func (s *session) runBackup(ctx context.Context) {
 
 // 解析的sql写入缓存,并定期入库
 func (s *session) writeBackupRecord(dbname string, record *Record, values []interface{}) {
-	log.Debug("writeBackupRecord")
 
 	s.insertBuffer = append(s.insertBuffer, values...)
 
@@ -95,7 +95,6 @@ func (s *session) writeBackupRecord(dbname string, record *Record, values []inte
 
 // flush用以写入当前insert缓存,并清空缓存.
 func (s *session) flushBackupRecord(dbname string, record *Record) {
-	log.Debug("flushBackupRecord")
 	// log.Info("flush ", len(s.insertBuffer))
 
 	if len(s.insertBuffer) > 0 {
@@ -112,6 +111,7 @@ func (s *session) flushBackupRecord(dbname string, record *Record) {
 		if err != nil {
 			log.Error(err)
 			if myErr, ok := err.(*mysqlDriver.MySQLError); ok {
+				s.recordSets.MaxLevel = 2
 				record.StageStatus = StatusBackupFail
 				record.AppendErrorMessage(myErr.Message)
 			}

@@ -3,16 +3,22 @@ package session
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/hex"
 	"fmt"
-	mysqlDriver "github.com/go-sql-driver/mysql"
-	"github.com/hanchuanchuan/go-mysql/mysql"
-	"github.com/hanchuanchuan/go-mysql/replication"
-	"github.com/juju/errors"
-	log "github.com/sirupsen/logrus"
+	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
+	"github.com/juju/errors"
+	"github.com/shopspring/decimal"
+	"github.com/siddontang/go-mysql/mysql"
+	"github.com/siddontang/go-mysql/replication"
+	log "github.com/sirupsen/logrus"
 )
 
 const digits01 = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
@@ -78,11 +84,13 @@ func (s *session) GetNextBackupRecord() *Record {
 				s.ch <- &ChanData{sqlStr: r.DDLRollback, opid: r.OPID,
 					table: s.lastBackupTable, record: r}
 
-				r.StageStatus = StatusBackupOK
+				if r.StageStatus != StatusExecFail {
+					r.StageStatus = StatusBackupOK
+				}
 
 				continue
 
-			} else if r.AffectedRows > 0 && s.checkSqlIsDML(r) {
+			} else if (r.AffectedRows > 0 || r.StageStatus == StatusExecFail) && s.checkSqlIsDML(r) {
 
 				// if s.opt.middlewareExtend != "" {
 				// 	continue
@@ -99,7 +107,10 @@ func (s *session) GetNextBackupRecord() *Record {
 				}
 
 				// 先置默认值为备份失败,在备份完成后置为成功
-				r.StageStatus = StatusBackupFail
+				// if r.AffectedRows > 0 {
+				if r.StageStatus != StatusExecFail {
+					r.StageStatus = StatusBackupFail
+				}
 				clearDeleteColumns(r.TableInfo)
 
 				return r
@@ -187,14 +198,31 @@ func (s *session) Parser(ctx context.Context) {
 	// 启用Logger，显示详细日志
 	// s.backupdb.LogMode(true)
 
-	cfg := replication.BinlogSyncerConfig{
-		ServerID: 2000111111,
-		// Flavor:   p.cfg.Flavor,
+	flavor := "mysql"
+	if s.DBType == DBTypeMariaDB {
+		flavor = "mariadb"
+	}
 
-		Host:     s.opt.host,
-		Port:     uint16(s.opt.port),
-		User:     s.opt.user,
-		Password: s.opt.password,
+	var (
+		host string
+		port uint16
+	)
+	if s.isMiddleware() {
+		host = s.opt.parseHost
+		port = uint16(s.opt.parsePort)
+	} else {
+		host = s.opt.host
+		port = uint16(s.opt.port)
+	}
+	cfg := replication.BinlogSyncerConfig{
+		ServerID: 2000111111 + uint32(s.sessionVars.ConnectionID%10000),
+		Flavor:   flavor,
+
+		Host:       host,
+		Port:       port,
+		User:       s.opt.user,
+		Password:   s.opt.password,
+		UseDecimal: true,
 		// RawModeEnabled:  p.cfg.RawMode,
 		// SemiSyncEnabled: p.cfg.SemiSync,
 	}
@@ -240,8 +268,6 @@ func (s *session) Parser(ctx context.Context) {
 			continue
 		}
 
-		log.Debug(e.Header.EventType)
-
 		switch e.Header.EventType {
 		case replication.TABLE_MAP_EVENT:
 			if event, ok := e.Event.(*replication.TableMapEvent); ok {
@@ -280,6 +306,7 @@ func (s *session) Parser(ctx context.Context) {
 		case replication.UPDATE_ROWS_EVENTv1, replication.UPDATE_ROWS_EVENTv2:
 			if event, ok := e.Event.(*replication.RowsEvent); ok {
 				if s.checkFilter(event, record, currentThreadID) {
+
 					_, err = s.generateUpdateSql(record.TableInfo, event, e)
 					s.checkError(err)
 				} else {
@@ -291,7 +318,14 @@ func (s *session) Parser(ctx context.Context) {
 	ENDCHECK:
 		// 如果操作已超过binlog范围,切换到下一日志
 		if currentPosition.Compare(stopPosition) > -1 {
-			record.StageStatus = StatusBackupOK
+			// sql被kill后,如果备份时可以检测到行,则认为执行成功
+			// 工单只有执行成功,才允许标记为备份成功
+			// if (record.StageStatus == StatusExecFail && record.AffectedRows > 0) ||
+			// 	record.StageStatus == StatusExecOK || record.StageStatus == StatusBackupFail {
+			if record.AffectedRows > 0 {
+				record.StageStatus = StatusBackupOK
+			}
+
 			record.BackupCostTime = fmt.Sprintf("%.3f", time.Since(startTime).Seconds())
 
 			next := s.GetNextBackupRecord()
@@ -307,10 +341,17 @@ func (s *session) Parser(ctx context.Context) {
 			}
 		}
 
-		// // 进程Killed
-		// if err := checkClose(ctx); err != nil {
-		// 	log.Warn("Killed: ", err)
-		// 	s.AppendErrorMessage("Operation has been killed!")
+		// 如果执行阶段已经kill,则不再检查
+		if !s.killExecute {
+			// 进程Killed
+			if err := checkClose(ctx); err != nil {
+				log.Warn("Killed: ", err)
+				s.AppendErrorMessage("Operation has been killed!")
+				break
+			}
+		}
+
+		// if s.hasErrorBefore() {
 		// 	break
 		// }
 	}
@@ -340,7 +381,6 @@ func (s *session) checkFilter(event *replication.RowsEvent,
 // 解析的sql写入缓存,并定期入库
 func (s *session) myWrite(b []byte, binEvent *replication.BinlogEvent,
 	opid string, table string, record *Record) {
-	log.Debug("myWrite")
 
 	b = append(b, ";"...)
 
@@ -353,7 +393,6 @@ func (s *session) myWrite(b []byte, binEvent *replication.BinlogEvent,
 
 // 解析的sql写入缓存,并定期入库
 func (s *session) myWriteDDL(sql string, opid string, table string, record *Record) {
-	log.Debug("myWriteDDL")
 
 	s.insertBuffer = append(s.insertBuffer, sql, opid)
 
@@ -377,6 +416,8 @@ func (s *session) flush(table string, record *Record) {
 			if myErr, ok := err.(*mysqlDriver.MySQLError); ok {
 				record.StageStatus = StatusBackupFail
 				record.AppendErrorMessage(myErr.Message)
+				// log.Error(fmt.Sprintf(sql, table, values))
+				// log.Error(s.insertBuffer)
 				log.Error(myErr)
 			}
 		}
@@ -401,6 +442,12 @@ func (s *session) checkError(e error) {
 }
 
 func (s *session) write(b []byte, binEvent *replication.BinlogEvent) {
+	// 此处执行状态不确定的记录
+	if s.myRecord.StageStatus == StatusExecFail {
+		log.Info("auto fix record:", s.myRecord.OPID)
+		s.myRecord.AffectedRows += 1
+		s.TotalChangeRows += 1
+	}
 	s.ch <- &ChanData{sql: b, e: binEvent, opid: s.myRecord.OPID,
 		table: s.lastBackupTable, record: s.myRecord}
 }
@@ -431,7 +478,10 @@ func (s *session) generateInsertSql(t *TableInfo, e *replication.RowsEvent,
 	for _, rows := range e.Rows {
 
 		var vv []driver.Value
-		for _, d := range rows {
+		for i, d := range rows {
+			if t.Fields[i].IsUnsigned() {
+				d = processValue(d, GetDataTypeBase(t.Fields[i].Type))
+			}
 			vv = append(vv, d)
 			// if _, ok := d.([]byte); ok {
 			//  log.Info().Msgf("%s:%q\n", t.Fields[j].Field, d)
@@ -440,7 +490,7 @@ func (s *session) generateInsertSql(t *TableInfo, e *replication.RowsEvent,
 			// }
 		}
 
-		r, err := InterpolateParams(sql, vv)
+		r, err := InterpolateParams(sql, vv, s.Inc.HexBlob)
 		s.checkError(err)
 
 		s.write(r, binEvent)
@@ -473,6 +523,9 @@ func (s *session) generateDeleteSql(t *TableInfo, e *replication.RowsEvent,
 			if t.hasPrimary {
 				_, ok := t.primarys[i]
 				if ok {
+					if t.Fields[i].IsUnsigned() {
+						d = processValue(d, GetDataTypeBase(t.Fields[i].Type))
+					}
 					vv = append(vv, d)
 					if d == nil {
 						columnNames = append(columnNames,
@@ -483,6 +536,9 @@ func (s *session) generateDeleteSql(t *TableInfo, e *replication.RowsEvent,
 					}
 				}
 			} else {
+				if t.Fields[i].IsUnsigned() {
+					d = processValue(d, GetDataTypeBase(t.Fields[i].Type))
+				}
 				vv = append(vv, d)
 
 				if d == nil {
@@ -497,7 +553,7 @@ func (s *session) generateDeleteSql(t *TableInfo, e *replication.RowsEvent,
 		}
 		newSql := strings.Join([]string{sql, strings.Join(columnNames, " AND")}, "")
 
-		r, err := InterpolateParams(newSql, vv)
+		r, err := InterpolateParams(newSql, vv, s.Inc.HexBlob)
 		s.checkError(err)
 
 		s.write(r, binEvent)
@@ -505,6 +561,54 @@ func (s *session) generateDeleteSql(t *TableInfo, e *replication.RowsEvent,
 	}
 
 	return string(buf), nil
+}
+
+// processValue 处理无符号值(unsigned)
+func processValue(value driver.Value, dataType string) driver.Value {
+	if value == nil {
+		return value
+	}
+
+	switch v := value.(type) {
+	case int8:
+		if v >= 0 {
+			return value
+		}
+		return int64(1<<8 + int64(v))
+	case int16:
+		if v >= 0 {
+			return value
+		}
+		return int64(1<<16 + int64(v))
+	case int32:
+		if v >= 0 {
+			return value
+		}
+		if dataType == "mediumint" {
+			return int64(1<<24 + int64(v))
+		}
+		return int64(1<<32 + int64(v))
+	case int64:
+		if v >= 0 {
+			return value
+		}
+		return math.MaxUint64 - uint64(abs(v)) + 1
+	// case int:
+	// case float32:
+	// case float64:
+
+	default:
+		// log.Error("解析错误")
+		// log.Errorf("%T", v)
+		return value
+	}
+
+	return value
+}
+
+func abs(n int64) int64 {
+	y := n >> 63
+	return (n ^ y) - y
 }
 
 func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
@@ -522,19 +626,25 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 	var columnNames []string
 	c_null := " `%s` IS ?"
 	c := " `%s`=?"
+	var sql string
 
 	var sets []string
 
-	for i, col := range t.Fields {
-		if i < int(e.ColumnCount) {
-			sets = append(sets, fmt.Sprintf(setValue, col.Field))
+	// 最小化回滚语句, 当开启时,update语句中未变更的值不再记录到回滚语句中
+	minimalMode := s.Inc.EnableMinimalRollback
+
+	if !minimalMode {
+		for i, col := range t.Fields {
+			// 日志是minimal模式时, 只取有值的新列
+			// && uint8(e.ColumnBitmap2[i/8])&(1<<(uint(i)%8)) == uint8(e.ColumnBitmap2[i/8])
+
+			if i < int(e.ColumnCount) {
+				sets = append(sets, fmt.Sprintf(setValue, col.Field))
+			}
 		}
+		sql = fmt.Sprintf(template, e.Table.Schema, e.Table.Table,
+			strings.Join(sets, ","))
 	}
-
-	sql := fmt.Sprintf(template, e.Table.Schema, e.Table.Table,
-		strings.Join(sets, ","))
-
-	// log.Info().Msg(sql)
 
 	var (
 		oldValues []driver.Value
@@ -543,20 +653,53 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 	)
 	// update时, Rows为2的倍数, 双数index为旧值,单数index为新值
 	for i, rows := range e.Rows {
-
 		if i%2 == 0 {
 			// 旧值
-			for _, d := range rows {
-				newValues = append(newValues, d)
+			for j, d := range rows {
+				// // 日志是minimal模式时, 只取有值的新列
+				// if uint8(e.ColumnBitmap2[j/8])&(1<<(uint(j)%8)) != uint8(e.ColumnBitmap2[j/8]) {
+				// 	continue
+				// }
+				if minimalMode {
+					equal := false
+					switch v := d.(type) {
+					case []byte:
+						equal = reflect.DeepEqual(d, e.Rows[i+1][j])
+					case decimal.Decimal:
+						if newDec, ok := e.Rows[i+1][j].(decimal.Decimal); ok {
+							equal = v.Equal(newDec)
+						} else {
+							equal = false
+						}
+					default:
+						equal = d == e.Rows[i+1][j]
+					}
+					// 最小化模式下,列如果相等则省略
+					if !equal {
+						if t.Fields[j].IsUnsigned() {
+							d = processValue(d, GetDataTypeBase(t.Fields[j].Type))
+						}
+						newValues = append(newValues, d)
+						if j < len(t.Fields) {
+							sets = append(sets, fmt.Sprintf(setValue, t.Fields[j].Field))
+						}
+					}
+				} else {
+					if t.Fields[j].IsUnsigned() {
+						d = processValue(d, GetDataTypeBase(t.Fields[j].Type))
+					}
+					newValues = append(newValues, d)
+				}
 			}
 		} else {
 			// 新值
 			columnNames = nil
 			for j, d := range rows {
-
 				if t.hasPrimary {
-					_, ok := t.primarys[j]
-					if ok {
+					if _, ok := t.primarys[j]; ok {
+						if t.Fields[j].IsUnsigned() {
+							d = processValue(d, GetDataTypeBase(t.Fields[j].Type))
+						}
 						oldValues = append(oldValues, d)
 
 						if d == nil {
@@ -568,6 +711,9 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 						}
 					}
 				} else {
+					if t.Fields[j].IsUnsigned() {
+						d = processValue(d, GetDataTypeBase(t.Fields[j].Type))
+					}
 					oldValues = append(oldValues, d)
 
 					if d == nil {
@@ -578,14 +724,16 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 							fmt.Sprintf(c, t.Fields[j].Field))
 					}
 				}
-
 			}
 
-			newValues = append(newValues, oldValues...)
-
+			if minimalMode {
+				sql = fmt.Sprintf(template, e.Table.Schema, e.Table.Table,
+					strings.Join(sets, ","))
+				sets = nil
+			}
 			newSql = strings.Join([]string{sql, strings.Join(columnNames, " AND")}, "")
-			// log.Info().Msg(newSql, len(newValues))
-			r, err := InterpolateParams(newSql, newValues)
+			newValues = append(newValues, oldValues...)
+			r, err := InterpolateParams(newSql, newValues, s.Inc.HexBlob)
 			s.checkError(err)
 
 			s.write(r, binEvent)
@@ -593,13 +741,12 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 			oldValues = nil
 			newValues = nil
 		}
-
 	}
 
 	return string(buf), nil
 }
 
-func InterpolateParams(query string, args []driver.Value) ([]byte, error) {
+func InterpolateParams(query string, args []driver.Value, hexBlob bool) ([]byte, error) {
 	// Number of ? should be same to len(args)
 	if strings.Count(query, "?") != len(args) {
 		log.Error("sql", query, "需要参数", strings.Count(query, "?"),
@@ -629,6 +776,9 @@ func InterpolateParams(query string, args []driver.Value) ([]byte, error) {
 			continue
 		}
 
+		// log.Info(arg)
+		// log.Infof("%T", arg)
+
 		switch v := arg.(type) {
 		case int8:
 			buf = strconv.AppendInt(buf, int64(v), 10)
@@ -638,8 +788,12 @@ func InterpolateParams(query string, args []driver.Value) ([]byte, error) {
 			buf = strconv.AppendInt(buf, int64(v), 10)
 		case int64:
 			buf = strconv.AppendInt(buf, v, 10)
+		case uint64:
+			buf = strconv.AppendUint(buf, uint64(v), 10)
 		case int:
 			buf = strconv.AppendInt(buf, int64(v), 10)
+		case decimal.Decimal:
+			buf = append(buf, v.String()...)
 		case float32:
 			buf = strconv.AppendFloat(buf, float64(v), 'g', -1, 32)
 		case float64:
@@ -696,18 +850,41 @@ func InterpolateParams(query string, args []driver.Value) ([]byte, error) {
 				buf = append(buf, '\'')
 			}
 		case string:
-			buf = append(buf, '\'')
-			buf = escapeBytesBackslash(buf, []byte(v))
+			if hexBlob {
+				if utf8.ValidString(v) {
+					buf = append(buf, '\'')
+					buf = escapeBytesBackslash(buf, []byte(v))
+				} else {
+					buf = append(buf, 'X')
+					buf = append(buf, '\'')
+					b := hex.EncodeToString([]byte(v))
+					buf = append(buf, b...)
+				}
+			} else {
+				buf = append(buf, '\'')
+				buf = escapeBytesBackslash(buf, []byte(v))
+			}
+
 			buf = append(buf, '\'')
 		case []byte:
 			if v == nil {
 				buf = append(buf, "NULL"...)
 			} else {
 				// buf = append(buf, "_binary'"...)
-				buf = append(buf, '\'')
-
-				buf = escapeBytesBackslash(buf, v)
-
+				if hexBlob {
+					if utf8.Valid(v) {
+						buf = append(buf, '\'')
+						buf = escapeBytesBackslash(buf, v)
+					} else {
+						buf = append(buf, 'X')
+						buf = append(buf, '\'')
+						b := hex.EncodeToString(v)
+						buf = append(buf, b...)
+					}
+				} else {
+					buf = append(buf, '\'')
+					buf = escapeBytesBackslash(buf, v)
+				}
 				buf = append(buf, '\'')
 			}
 		default:

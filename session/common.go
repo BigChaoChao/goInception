@@ -8,10 +8,12 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 
 	// "github.com/hanchuanchuan/goInception/types"
+	"github.com/hanchuanchuan/goInception/ast"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -116,7 +118,8 @@ func (col *FieldInfo) GetDataBytes(dbVersion int) int {
 		// date & time
 		return timeStorageReq(col.Type, dbVersion)
 
-	case "char", "binary", "varchar", "varbinary", "enum", "set":
+	case "char", "binary", "varchar", "varbinary", "enum", "set",
+		"geometry", "point", "linestring", "polygon":
 		// string
 		charset := "utf8mb4"
 		if col.Collation != "" {
@@ -433,3 +436,38 @@ func checkClose(ctx context.Context) error {
 // if err := checkGoContext(ctx); err != nil {
 // 	return nil, err
 // }
+
+func findColumn(c *ast.ColumnNameExpr, t *TableInfo) *FieldInfo {
+	var tName string
+	db := c.Name.Schema.L
+	if t.AsName != "" {
+		tName = t.AsName
+	} else {
+		tName = t.Name
+	}
+	if c.Name.Table.L != "" && (db == "" || strings.EqualFold(t.Schema, db)) &&
+		(strings.EqualFold(tName, c.Name.Table.L)) ||
+		c.Name.Table.L == "" {
+		for i, field := range t.Fields {
+			if strings.EqualFold(field.Field, c.Name.Name.L) && !field.IsDeleted {
+				return &t.Fields[i]
+			}
+		}
+	}
+	return nil
+}
+
+func findColumnWithList(c *ast.ColumnNameExpr, tables []*TableInfo) *FieldInfo {
+	for _, t := range tables {
+		f := findColumn(c, t)
+		if f != nil {
+			return f
+		}
+	}
+	return nil
+}
+
+func Exist(filename string) bool {
+	_, err := os.Stat(filename)
+	return err == nil || os.IsExist(err)
+}
