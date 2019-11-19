@@ -3519,7 +3519,9 @@ func (s *session) checkAlterTable(node *ast.AlterTableStmt, sql string) {
 
 		case ast.AlterTableLock,
 			ast.AlterTableAlgorithm,
-			ast.AlterTableForce:
+			ast.AlterTableForce,
+			//忽略添加分区检查 by ChaoChao
+			ast.AlterTableAddPartitions:
 			// 不做校验,允许这些参数
 
 		default:
